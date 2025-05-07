@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1"
+env_logger = "0.11.8"
+log = { version = "0.4", features = ["std", "serde"] }
 pingora = { version = "0.4.0", features = ["proxy", "rustls", "lb"] }
-tokio = { version = "1", features = ["net"] }
+bytes = "1.0"
 
 [patch.crates-io]
 sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }
