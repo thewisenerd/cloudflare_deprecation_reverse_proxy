@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use log::info;
+use log::{debug, info};
+use pingora::http::ResponseHeader;
 use pingora::prelude::*;
 use pingora::proxy::ProxyHttp;
 use pingora::proxy::http_proxy_service;
@@ -11,12 +12,37 @@ use std::time::Duration;
 const PROXY_HOST: &str = "api.cloudflare.com";
 
 pub struct ProxyServer(Arc<LoadBalancer<RoundRobin>>);
+pub struct RequestContext {
+    buffer: Vec<u8>,
+    processing: bool,
+    zone_id: String,
+}
+
+fn path_validate(path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    if !(parts[0] == "" && parts[1] == "client" && parts[2] == "v4" && parts[3] == "zones") {
+        return None;
+    }
+    if !(parts[5] == "dns_records") {
+        return None;
+    }
+    Some(parts[4].to_string())
+}
 
 #[async_trait]
 impl ProxyHttp for ProxyServer {
-    type CTX = ();
+    type CTX = RequestContext;
 
-    fn new_ctx(&self) -> Self::CTX {}
+    fn new_ctx(&self) -> Self::CTX {
+        RequestContext {
+            buffer: Vec::new(),
+            processing: false,
+            zone_id: "".to_string(),
+        }
+    }
 
     async fn upstream_peer(
         &self,
@@ -27,6 +53,23 @@ impl ProxyHttp for ProxyServer {
         info!("upstream: {:?}", upstream);
         let peer = Box::new(HttpPeer::new(upstream, true, PROXY_HOST.to_owned()));
         Ok(peer)
+    }
+
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let path_and_query = session.req_header().uri.path_and_query().unwrap();
+        let path = path_and_query.path();
+        debug!("path: {}", path);
+
+        if let Some(zone_id) = path_validate(path) {
+            ctx.zone_id = zone_id;
+            ctx.processing = true;
+            debug!("zone_id: {}", ctx.zone_id);
+        }
+
+        Ok(false)
     }
 
     async fn upstream_request_filter(
@@ -41,8 +84,54 @@ impl ProxyHttp for ProxyServer {
         upstream_request.insert_header("Host", PROXY_HOST.to_owned())?;
         Ok(())
     }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if !ctx.processing {
+            return Ok(());
+        }
+
+        // Remove content-length because the size of the new body is unknown
+        upstream_response.remove_header("Content-Length");
+        upstream_response.insert_header("Transfer-Encoding", "Chunked")?;
+        Ok(())
+    }
+
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<Duration>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if !ctx.processing {
+            return Ok(None);
+        }
+
+        debug!("response_body_filter+");
+
+        if let Some(b) = body {
+            ctx.buffer.extend(&b[..]);
+            b.clear();
+        }
+        if end_of_stream {
+            *body = Some(Bytes::copy_from_slice(&ctx.buffer));
+        }
+        Ok(None)
+    }
 }
 
+// RUST_LOG=cloudflare_deprecation_reverse_proxy=debug,info
 fn main() {
     env_logger::init();
 
