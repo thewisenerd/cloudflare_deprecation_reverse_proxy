@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use log::{debug, info};
+use log::{debug, error, info};
 use pingora::http::ResponseHeader;
 use pingora::prelude::*;
 use pingora::proxy::ProxyHttp;
 use pingora::proxy::http_proxy_service;
+use serde_json::{Result as SerdeResult, Value, from_slice, to_vec};
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,20 @@ fn path_validate(path: &str) -> Option<String> {
         return None;
     }
     Some(parts[4].to_string())
+}
+
+pub fn mutate(content: &[u8], zone_id: &str) -> SerdeResult<Vec<u8>> {
+    info!("patching dns_records for zone_id {}", zone_id);
+
+    let mut response: Value = from_slice(content)?;
+
+    if let Some(result) = response.get_mut("result").and_then(|v| v.as_array_mut()) {
+        for record in result {
+            record["zone_id"] = Value::String(zone_id.to_string());
+        }
+    }
+
+    to_vec(&response)
 }
 
 #[async_trait]
@@ -125,7 +140,12 @@ impl ProxyHttp for ProxyServer {
             b.clear();
         }
         if end_of_stream {
-            *body = Some(Bytes::copy_from_slice(&ctx.buffer));
+            let mutated = mutate(&ctx.buffer, &ctx.zone_id).unwrap_or_else(|e| {
+                error!("mutate error: {}", e);
+                ctx.buffer.clone()
+            });
+            *body = Some(Bytes::from(mutated));
+            ctx.buffer.clear();
         }
         Ok(None)
     }

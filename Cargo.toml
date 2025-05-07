@@ -9,6 +9,7 @@ env_logger = "0.11.8"
 log = { version = "0.4", features = ["std", "serde"] }
 pingora = { version = "0.4.0", features = ["proxy", "rustls", "lb"] }
 bytes = "1.0"
+serde_json = "1.0.140"
 
 [patch.crates-io]
 sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }
