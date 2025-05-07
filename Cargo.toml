@@ -1,0 +1,12 @@
+[package]
+name = "cloudflare_deprecation_reverse_proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1"
+pingora = { version = "0.4.0", features = ["proxy", "rustls", "lb"] }
+tokio = { version = "1", features = ["net"] }
+
+[patch.crates-io]
+sfv = { git = "https://github.com/undef1nd/sfv.git", tag = "v0.9.4" }
