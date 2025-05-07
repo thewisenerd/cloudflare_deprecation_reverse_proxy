@@ -10,16 +10,28 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 
+// api.cloudflare.com/client/v4
+// thewisenerd.io/cfp/client/v4
+
 const PROXY_HOST: &str = "api.cloudflare.com";
 
 pub struct ProxyServer(Arc<LoadBalancer<RoundRobin>>);
 pub struct RequestContext {
     buffer: Vec<u8>,
-    processing: bool,
+    deprecations: Vec<Deprecation>,
+}
+
+#[derive(Debug)]
+pub struct Deprecation20241130 {
     zone_id: String,
 }
 
-fn path_validate(path: &str) -> Option<String> {
+#[derive(Debug)]
+enum Deprecation {
+    D2024_11_30(Deprecation20241130),
+}
+
+fn path_validate(path: &str) -> Option<Deprecation> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() != 6 {
         return None;
@@ -30,10 +42,12 @@ fn path_validate(path: &str) -> Option<String> {
     if !(parts[5] == "dns_records") {
         return None;
     }
-    Some(parts[4].to_string())
+    Some(Deprecation::D2024_11_30(Deprecation20241130 {
+        zone_id: parts[4].to_string(),
+    }))
 }
 
-pub fn mutate(content: &[u8], zone_id: &str) -> SerdeResult<Vec<u8>> {
+fn mutate2024_11_30(content: &[u8], zone_id: &str) -> SerdeResult<Vec<u8>> {
     info!("patching dns_records for zone_id {}", zone_id);
 
     let mut response: Value = from_slice(content)?;
@@ -47,6 +61,19 @@ pub fn mutate(content: &[u8], zone_id: &str) -> SerdeResult<Vec<u8>> {
     to_vec(&response)
 }
 
+// TODO: handle SerdeResult vs Result
+fn mutate(content: &[u8], deprecations: &[Deprecation]) -> SerdeResult<Vec<u8>> {
+    let mut mutated = content.to_vec();
+    for deprecation in deprecations {
+        match deprecation {
+            Deprecation::D2024_11_30(d) => {
+                mutated = mutate2024_11_30(&mutated, &d.zone_id)?;
+            }
+        }
+    }
+    Ok(mutated)
+}
+
 #[async_trait]
 impl ProxyHttp for ProxyServer {
     type CTX = RequestContext;
@@ -54,8 +81,7 @@ impl ProxyHttp for ProxyServer {
     fn new_ctx(&self) -> Self::CTX {
         RequestContext {
             buffer: Vec::new(),
-            processing: false,
-            zone_id: "".to_string(),
+            deprecations: Vec::new(),
         }
     }
 
@@ -78,10 +104,9 @@ impl ProxyHttp for ProxyServer {
         let path = path_and_query.path();
         debug!("path: {}", path);
 
-        if let Some(zone_id) = path_validate(path) {
-            ctx.zone_id = zone_id;
-            ctx.processing = true;
-            debug!("zone_id: {}", ctx.zone_id);
+        if let Some(deprecation) = path_validate(path) {
+            debug!("deprecation: {:?}", deprecation);
+            ctx.deprecations.push(deprecation);
         }
 
         Ok(false)
@@ -109,7 +134,7 @@ impl ProxyHttp for ProxyServer {
     where
         Self::CTX: Send + Sync,
     {
-        if !ctx.processing {
+        if ctx.deprecations.is_empty() {
             return Ok(());
         }
 
@@ -129,7 +154,7 @@ impl ProxyHttp for ProxyServer {
     where
         Self::CTX: Send + Sync,
     {
-        if !ctx.processing {
+        if ctx.deprecations.is_empty() {
             return Ok(None);
         }
 
@@ -140,7 +165,7 @@ impl ProxyHttp for ProxyServer {
             b.clear();
         }
         if end_of_stream {
-            let mutated = mutate(&ctx.buffer, &ctx.zone_id).unwrap_or_else(|e| {
+            let mutated = mutate(&ctx.buffer, &ctx.deprecations).unwrap_or_else(|e| {
                 error!("mutate error: {}", e);
                 ctx.buffer.clone()
             });
