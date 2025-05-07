@@ -134,6 +134,11 @@ impl ProxyHttp for ProxyServer {
     where
         Self::CTX: Send + Sync,
     {
+        upstream_response.insert_header(
+            "x-server-source",
+            "https://github.com/thewisenerd/cloudflare_deprecation_reverse_proxy",
+        )?;
+
         if ctx.deprecations.is_empty() {
             return Ok(());
         }
