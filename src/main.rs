@@ -122,8 +122,8 @@ impl ProxyHttp for ProxyServer {
         Self::CTX: Send + Sync,
     {
         upstream_request.insert_header("Host", PROXY_HOST.to_owned())?;
-        // TODO: something inside pingora is setting accept-encoding to gzip; mitigating for now.
-        upstream_request.insert_header("accept-encoding", "identity")?;
+        // TODO: something inside pingora or my own reverse proxy is setting accept-encoding to gzip; mitigating for now.
+        upstream_request.remove_header("accept-encoding");
         Ok(())
     }
 
